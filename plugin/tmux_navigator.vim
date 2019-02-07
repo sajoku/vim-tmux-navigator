@@ -51,7 +51,7 @@ function! s:TmuxOrTmateExecutable()
 endfunction
 
 function! s:TmuxVimPaneIsZoomed()
-  return s:TmuxCommand("display-message -p '#{window_zoomed_flag}'") == 1
+  return s:TmuxCommand(['display-message', '-p', '#{window_zoomed_flag}']) == 1
 endfunction
 
 function! s:TmuxSocket()
@@ -59,13 +59,24 @@ function! s:TmuxSocket()
   return split($TMUX, ',')[0]
 endfunction
 
-function! s:TmuxCommand(args)
-  let cmd = s:TmuxOrTmateExecutable() . ' -S ' . s:TmuxSocket() . ' ' . a:args
-  return system(cmd)
+function! s:GetTmuxCommand(args)
+  return [s:TmuxOrTmateExecutable(), '-S', s:TmuxSocket()] + a:args
 endfunction
 
+if has('nvim')
+  function! s:TmuxCommand(args)
+    return substitute(system(s:GetTmuxCommand(a:args)), '\n$', '', '')
+  endfunction
+else
+  function! s:TmuxCommand(args)
+    " Vim does not support a list for `system()`.
+    let cmd = join(map(s:GetTmuxCommand(a:args), 'fnameescape(v:val)'))
+    return substitute(system(cmd), '\n$', '', '')
+  endfunction
+endif
+
 function! s:TmuxNavigatorProcessList()
-  echo s:TmuxCommand("run-shell 'ps -o state= -o comm= -t ''''#{pane_tty}'''''")
+  echo s:TmuxCommand(['run-shell', "ps -o state= -o comm= -t '#{pane_tty}'"])
 endfunction
 command! TmuxNavigatorProcessList call s:TmuxNavigatorProcessList()
 
@@ -108,8 +119,8 @@ function! s:TmuxAwareNavigate(direction)
       catch /^Vim\%((\a\+)\)\=:E141/ " catches the no file name error
       endtry
     endif
-    let args = 'select-pane -t ' . shellescape($TMUX_PANE) . ' -' . tr(a:direction, 'phjkl', 'lLDUR')
-    silent call s:TmuxCommand(args)
+    let args = ['select-pane', '-t', $TMUX_PANE, '-'.tr(a:direction, 'phjkl', 'lLDUR')]
+    call s:TmuxCommand(args)
     if s:NeedsVitalityRedraw()
       redraw!
     endif
@@ -118,3 +129,39 @@ function! s:TmuxAwareNavigate(direction)
     let s:tmux_is_last_pane = 0
   endif
 endfunction
+
+" Indicate to tmux keybindings that we handle $TMUX_PANE.
+if exists('*jobstart')
+  function! s:setup_indicator() abort
+    call call('jobstart', [s:GetTmuxCommand(['set', '-a', '@tmux_navigator', '-'.$TMUX_PANE.'-'])])
+  endfunction
+elseif exists('*job_start')
+  function! s:setup_indicator() abort
+    call call('job_start', [s:GetTmuxCommand(['set', '-a', '@tmux_navigator', '-'.$TMUX_PANE.'-'])])
+  endfunction
+else
+  function! s:setup_indicator() abort
+    call s:TmuxCommand(['set', '-a', '@tmux_navigator', '-'.$TMUX_PANE.'-'])
+  endfunction
+endif
+
+function! s:get_indicator() abort
+  return s:TmuxCommand(['show', '-v', '@tmux_navigator'])
+endfunction
+command! TmuxNavigatorPaneIndicator echo s:get_indicator()
+
+function! s:remove_indicator() abort
+  let cur = s:get_indicator()
+  " Remove indicators globally (especially important with nested Vim in :term).
+  let new = substitute(cur, '-'.$TMUX_PANE.'-', '', 'g')
+  call s:TmuxCommand(['set', '@tmux_navigator', new])
+endfunction
+
+augroup tmux_navigator
+  autocmd VimEnter * call s:setup_indicator()
+  autocmd VimLeave * call s:remove_indicator()
+  if exists('##VimSuspend')
+    autocmd VimSuspend * call s:remove_indicator()
+    autocmd VimResume * call s:setup_indicator()
+  endif
+augroup ENDndfunction
